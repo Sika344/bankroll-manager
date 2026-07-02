@@ -55,7 +55,7 @@ const UI = (() => {
     if (charts[id]) charts[id].destroy();
     const ctx = document.getElementById(id);
     if (!ctx) return;
-    Chart.defaults.font.family = "'JetBrains Mono', monospace";
+    Chart.defaults.font.family = "'Inter Tight', ui-monospace, monospace";
     Chart.defaults.font.size = 11;
     Chart.defaults.color = '#6b6b75';
     charts[id] = new Chart(ctx, config);

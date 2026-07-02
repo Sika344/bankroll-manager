@@ -6,25 +6,30 @@
   --bg2:#111114;
   --card:#111114;
   --card2:#1a1a1f;
-  --border:#1a1a1f;
+  --border:#1f1f25;
   --border2:#2a2a30;
   --text:#e8e8ea;
   --text2:#9a9aa4;
   --text3:#6b6b75;
   --text4:#3f3f47;
   --green:#4ade80;
+  --green-light:#86efac;
   --green-dim:#22c55e;
+  --green-bg:rgba(74,222,128,.09);
+  --green-line:rgba(74,222,128,.38);
   --green-glow:rgba(74,222,128,.18);
   --red:#ef4444;
+  --red-light:#f87171;
   --red-glow:rgba(239,68,68,.15);
   --amber:#fbbf24;
   --violet:#8b7ff6;
   --gold:#fbbf24;
-  --mono:'JetBrains Mono',monospace;
-  --sans:'Satoshi',sans-serif;
-  --display:'Cabinet Grotesk',sans-serif;
+  --mono:'Inter Tight',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:'Satoshi',system-ui,-apple-system,sans-serif;
+  --display:'Satoshi',system-ui,sans-serif;
 }
 *{margin:0;padding:0;box-sizing:border-box}
+.num,.stat-val,.bk-value,.badge,.cote,table td,table th,[class*="mono"],.mono-input,input[type="number"]{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
 html{scroll-behavior:smooth}
 body{
   font-family:var(--sans);
@@ -148,7 +153,7 @@ button{font-family:var(--sans)}
   white-space:nowrap;
 }
 .btn:disabled{opacity:.45;cursor:not-allowed}
-.btn-primary{background:var(--green);color:#04130a}
+.btn-primary{background:var(--green);color:#08140c}
 .btn-primary:hover:not(:disabled){background:#5ee894;transform:translateY(-1px)}
 .btn-ghost{background:transparent;color:var(--text);border:1px solid var(--border2)}
 .btn-ghost:hover:not(:disabled){background:var(--card2)}
@@ -160,7 +165,7 @@ button{font-family:var(--sans)}
 .btn-icon{width:34px;padding:0}
 
 /* ─────────── BADGES ─────────── */
-.badge{display:inline-flex;align-items:center;gap:4px;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:600;font-family:var(--mono)}
+.badge{display:inline-flex;align-items:center;gap:4px;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;font-family:var(--mono)}
 .badge-green{background:rgba(74,222,128,.12);color:var(--green)}
 .badge-red{background:rgba(239,68,68,.12);color:var(--red)}
 .badge-amber{background:rgba(251,191,36,.12);color:var(--amber)}
