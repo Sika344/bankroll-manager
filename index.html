@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bankroll Manager</title>
+<meta name="description" content="Gestion de bankroll paris sportifs — suivi complet, ajout par screenshot, stats avancées.">
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect x='15' y='15' width='70' height='70' rx='14' fill='%234ade80'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@900,800,700,500,400&f[]=satoshi@900,700,500,400&display=swap">
+<link rel="stylesheet" href="css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ═══════════ NAV ═══════════ -->
+<nav class="nav">
+  <div class="nav-in">
+    <a class="brand" href="#dashboard">
+      <span class="brand-dot"></span> Bankroll <small>MANAGER</small>
+    </a>
+    <div class="nav-tabs">
+      <button class="nav-tab active" data-view="dashboard"><span class="ico">◧</span><span class="lbl">Dashboard</span></button>
+      <button class="nav-tab" data-view="add"><span class="ico">＋</span><span class="lbl">Ajouter</span></button>
+      <button class="nav-tab" data-view="history"><span class="ico">☰</span><span class="lbl">Historique</span></button>
+      <button class="nav-tab" data-view="stats"><span class="ico">◔</span><span class="lbl">Stats</span></button>
+      <button class="nav-tab" data-view="settings"><span class="ico">⚙</span><span class="lbl">Réglages</span></button>
+    </div>
+  </div>
+</nav>
+
+<!-- ═══════════ VUE : DASHBOARD ═══════════ -->
+<section class="view active" id="view-dashboard">
+  <div class="w">
+    <div class="bk-hero">
+      <div class="bk-label">Bankroll actuelle</div>
+      <div class="bk-value" id="d-bankroll">—</div>
+      <div class="bk-meta">
+        <span>Départ <b id="d-initial">—</b></span>
+        <span>Profit total <b id="d-profit-total">—</b></span>
+        <span>Ce mois <span class="delta" id="d-month-delta">—</span></span>
+        <span>Exposition en cours <b id="d-exposure">—</b></span>
+        <span>Gains potentiels <b id="d-potential">—</b></span>
+      </div>
+    </div>
+
+    <div class="stats-grid" id="d-stat-cards"></div>
+
+    <div class="card">
+      <div class="card-title">Évolution de la bankroll <span class="hint" id="d-curve-hint"></span></div>
+      <div class="chart-box"><canvas id="chart-bankroll"></canvas></div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">⏳ Paris en attente <span class="hint" id="d-pending-count"></span></div>
+        <div id="d-pending-list"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Derniers paris réglés</div>
+        <div id="d-recent-list"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ VUE : AJOUTER ═══════════ -->
+<section class="view" id="view-add">
+  <div class="w">
+    <div class="page-head">
+      <div class="eyebrow"><span class="eyebrow-dot"></span> NOUVEAU PARI</div>
+      <h1 class="page-title">Ajouter un pari</h1>
+      <p class="page-sub">Envoie un screenshot de ton ticket : bookmaker, sélections, cotes, mise et date sont détectés automatiquement. Tu valides, c'est enregistré.</p>
+    </div>
+
+    <div class="seg" style="margin-bottom:18px">
+      <button id="mode-screen" class="active">📸 Screenshot</button>
+      <button id="mode-manual">✍️ Manuel</button>
+    </div>
+
+    <!-- Mode screenshot -->
+    <div id="add-screen-zone">
+      <div class="dropzone" id="dropzone">
+        <input type="file" id="file-input" accept="image/*" multiple style="display:none">
+        <div id="dz-idle">
+          <div class="dz-ico">🎫</div>
+          <div class="dz-main">Glisse ton screenshot ici</div>
+          <div class="dz-sub">ou clique pour choisir un fichier · ou colle avec <kbd>Ctrl</kbd>+<kbd>V</kbd> · plusieurs tickets acceptés</div>
+        </div>
+        <div id="dz-busy" class="hide">
+          <div class="dz-ico"><span class="spin" style="width:26px;height:26px;border-width:3px"></span></div>
+          <div class="dz-main">Analyse en cours…</div>
+          <div class="dz-sub" id="dz-busy-sub">Lecture du ticket par l'IA</div>
+        </div>
+        <div id="dz-preview" class="dz-preview hide"></div>
+      </div>
+      <div id="api-warning" class="hide" style="margin-top:12px">
+        <div class="card" style="border-color:rgba(251,191,36,.35);margin-bottom:0">
+          <div style="font-size:13.5px;color:var(--text2)">⚠️ <b style="color:var(--amber)">Clé API Anthropic non configurée.</b> La détection par screenshot utilise Claude Vision : ajoute ta clé dans <a href="#settings" style="color:var(--green);text-decoration:underline" onclick="App.go('settings')">Réglages</a> (coût ≈ 0,003&nbsp;€ par analyse). En attendant, utilise le mode manuel.</div>
+        </div>
+      </div>
+      <div id="detected-zone" style="margin-top:18px"></div>
+    </div>
+
+    <!-- Mode manuel / formulaire (aussi utilisé en édition dans un modal) -->
+    <div id="add-manual-zone" class="hide">
+      <div class="card">
+        <div id="bet-form-mount"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ VUE : HISTORIQUE ═══════════ -->
+<section class="view" id="view-history">
+  <div class="w">
+    <div class="page-head">
+      <div class="eyebrow"><span class="eyebrow-dot"></span> HISTORIQUE</div>
+      <h1 class="page-title">Tous les paris</h1>
+    </div>
+
+    <div class="filters">
+      <input type="search" id="f-search" placeholder="Rechercher (joueur, équipe, marché…)">
+      <select id="f-status">
+        <option value="">Statut : tous</option>
+        <option value="pending">En attente</option>
+        <option value="won">Gagné</option>
+        <option value="lost">Perdu</option>
+        <option value="halfwon">½ Gagné</option>
+        <option value="halflost">½ Perdu</option>
+        <option value="void">Remboursé</option>
+        <option value="cashout">Cashout</option>
+      </select>
+      <select id="f-book"><option value="">Book : tous</option></select>
+      <select id="f-sport"><option value="">Sport : tous</option></select>
+      <select id="f-tipster"><option value="">Source : toutes</option></select>
+      <select id="f-period">
+        <option value="">Période : tout</option>
+        <option value="7">7 derniers jours</option>
+        <option value="30">30 derniers jours</option>
+        <option value="90">3 mois</option>
+        <option value="month">Mois en cours</option>
+        <option value="year">Année en cours</option>
+      </select>
+      <button class="btn btn-ghost btn-sm" id="f-reset">Réinitialiser</button>
+      <span class="hint" id="f-count" style="margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--text3)"></span>
+    </div>
+
+    <div class="table-wrap">
+      <table id="history-table">
+        <thead>
+          <tr>
+            <th data-sort="eventDate">Date</th>
+            <th class="no-sort">Pari</th>
+            <th data-sort="bookmaker">Book</th>
+            <th data-sort="totalOdds">Cote</th>
+            <th data-sort="stake">Mise</th>
+            <th data-sort="stakePercent">% BK</th>
+            <th data-sort="status">Statut</th>
+            <th data-sort="profit">Profit</th>
+            <th class="no-sort"></th>
+          </tr>
+        </thead>
+        <tbody id="history-body"></tbody>
+      </table>
+    </div>
+    <div id="history-empty" class="hide" style="margin-top:16px"></div>
+  </div>
+</section>
+
+<!-- ═══════════ VUE : STATS ═══════════ -->
+<section class="view" id="view-stats">
+  <div class="w">
+    <div class="page-head">
+      <div class="eyebrow"><span class="eyebrow-dot"></span> ANALYSE</div>
+      <h1 class="page-title">Statistiques avancées</h1>
+      <p class="page-sub">Lecture complète de ta performance : rendement, régularité, risque et répartition — sur les paris réglés.</p>
+    </div>
+
+    <div class="stats-grid" id="s-adv-cards" style="grid-template-columns:repeat(4,1fr)"></div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">Profit mensuel</div>
+        <div class="chart-box sm"><canvas id="chart-monthly"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Mises par bookmaker</div>
+        <div class="chart-box sm"><canvas id="chart-books"></canvas></div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">Performance par tranche de cotes</div>
+        <div class="chart-box sm"><canvas id="chart-odds"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Profit par jour de la semaine</div>
+        <div class="chart-box sm"><canvas id="chart-weekday"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Répartitions détaillées</div>
+      <div class="split-tabs" id="split-tabs">
+        <button class="split-tab active" data-split="bookmaker">Bookmaker</button>
+        <button class="split-tab" data-split="sport">Sport</button>
+        <button class="split-tab" data-split="tipster">Source</button>
+        <button class="split-tab" data-split="market">Marché</button>
+        <button class="split-tab" data-split="betType">Type</button>
+        <button class="split-tab" data-split="oddsRange">Cotes</button>
+        <button class="split-tab" data-split="live">Live / Prématch</button>
+        <button class="split-tab" data-split="confidence">Confiance</button>
+        <button class="split-tab" data-split="month">Mois</button>
+        <button class="split-tab" data-split="weekday">Jour</button>
+      </div>
+      <div class="table-wrap" style="border:none">
+        <table class="mini-table" id="split-table">
+          <thead><tr><th>Segment</th><th>Paris</th><th>Winrate</th><th>Misé</th><th>Profit</th><th>Yield</th><th style="min-width:100px">.</th></tr></thead>
+          <tbody id="split-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" id="clv-card">
+      <div class="card-title">Closing Line Value <span class="hint">renseigne la cote de clôture sur tes paris pour l'activer</span></div>
+      <div id="clv-content"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ VUE : RÉGLAGES ═══════════ -->
+<section class="view" id="view-settings">
+  <div class="w">
+    <div class="page-head">
+      <div class="eyebrow"><span class="eyebrow-dot"></span> CONFIGURATION</div>
+      <h1 class="page-title">Réglages</h1>
+    </div>
+
+    <div class="card">
+      <div class="card-title">💰 Bankroll</div>
+      <div class="form-grid">
+        <div class="field">
+          <label>Bankroll initiale (€)</label>
+          <input type="number" id="set-initial" step="0.01" min="0">
+        </div>
+        <div class="field">
+          <label>Valeur d'une unité (€)</label>
+          <input type="number" id="set-unit" step="0.01" min="0">
+          <span class="aid">pour afficher les mises en unités</span>
+        </div>
+        <div class="field">
+          <label>Devise</label>
+          <select id="set-currency">
+            <option value="EUR">€ Euro</option>
+            <option value="USD">$ Dollar</option>
+            <option value="GBP">£ Livre</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:14px"><button class="btn btn-primary btn-sm" id="save-bankroll">Enregistrer</button></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🤖 Détection par screenshot (Claude Vision)</div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:14px">
+        L'analyse d'image passe directement de ton navigateur à l'API Anthropic — ta clé reste stockée localement sur cet appareil (localStorage), rien ne transite ailleurs.
+        Crée une clé sur <a href="https://console.anthropic.com" target="_blank" style="color:var(--green);text-decoration:underline">console.anthropic.com</a>.
+      </p>
+      <div class="form-grid">
+        <div class="field span2">
+          <label>Clé API Anthropic</label>
+          <input type="password" id="set-apikey" class="mono-input" placeholder="sk-ant-…">
+        </div>
+        <div class="field">
+          <label>Modèle</label>
+          <select id="set-model">
+            <option value="claude-haiku-4-5-20251001">Haiku 4.5 — rapide & éco (défaut)</option>
+            <option value="claude-sonnet-4-6">Sonnet 4.6 — précision max</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" id="save-api">Enregistrer</button>
+        <button class="btn btn-ghost btn-sm" id="test-api">Tester la connexion</button>
+        <span id="api-test-result" style="font-family:var(--mono);font-size:12px;align-self:center"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">☁️ Synchronisation GitHub (Gist secret)</div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:14px">
+        Sauvegarde tes données dans un Gist secret pour les retrouver sur tous tes appareils. Nécessite un PAT GitHub avec le scope <span class="num" style="color:var(--amber)">gist</span>.
+        ⚠️ Le PAT est stocké en localStorage sur cet appareil — n'utilise pas cette option sur un ordinateur partagé.
+      </p>
+      <div class="form-grid">
+        <div class="field span2">
+          <label>PAT GitHub (scope gist)</label>
+          <input type="password" id="set-ghpat" class="mono-input" placeholder="ghp_…">
+        </div>
+        <div class="field">
+          <label>Auto-sync</label>
+          <select id="set-autosync">
+            <option value="0">Désactivé (manuel)</option>
+            <option value="1">Push auto après chaque modif</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" id="gist-push">⬆ Sauvegarder sur GitHub</button>
+        <button class="btn btn-ghost btn-sm" id="gist-pull">⬇ Restaurer depuis GitHub</button>
+        <span id="gist-status" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--text3)"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">📦 Export / Import</div>
+      <div class="set-row">
+        <div class="sr-main"><div class="sr-t">Export JSON</div><div class="sr-s">Sauvegarde complète (paris + réglages hors clés)</div></div>
+        <button class="btn btn-ghost btn-sm" id="export-json">Télécharger</button>
+      </div>
+      <div class="set-row">
+        <div class="sr-main"><div class="sr-t">Export CSV</div><div class="sr-s">Tous les paris, pour Excel / Sheets</div></div>
+        <button class="btn btn-ghost btn-sm" id="export-csv">Télécharger</button>
+      </div>
+      <div class="set-row">
+        <div class="sr-main"><div class="sr-t">Import JSON</div><div class="sr-s">Restaure une sauvegarde (remplace les données actuelles)</div></div>
+        <input type="file" id="import-file" accept=".json" style="display:none">
+        <button class="btn btn-ghost btn-sm" id="import-json">Importer</button>
+      </div>
+    </div>
+
+    <div class="card" style="border-color:rgba(239,68,68,.25)">
+      <div class="card-title" style="color:var(--red)">⚠️ Zone dangereuse</div>
+      <div class="set-row">
+        <div class="sr-main"><div class="sr-t">Tout effacer</div><div class="sr-s">Supprime définitivement tous les paris et réglages de cet appareil</div></div>
+        <button class="btn btn-danger btn-sm" id="reset-all">Réinitialiser</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ MODAL ÉDITION ═══════════ -->
+<div class="modal-bg" id="modal-bg">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="modal-title">Modifier le pari</h3>
+      <button class="modal-close" id="modal-close">✕</button>
+    </div>
+    <div id="modal-form-mount"></div>
+  </div>
+</div>
+
+<div id="toast-zone"></div>
+
+<script src="js/storage.js"></script>
+<script src="js/stats.js"></script>
+<script src="js/vision.js"></script>
+<script src="js/betform.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
