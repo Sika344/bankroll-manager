@@ -73,7 +73,7 @@ const Ocr = (() => {
     lum /= px.length / 4;
     const dom = Object.entries(hue).sort((a, b) => b[1] - a[1])[0];
     const colorCandidates = dom[1] > 30
-      ? ({ red: ['Winamax', 'Betclic'], orange: ['ZEbet'], yellow: ['Bwin'], green: ['Unibet', 'PMU'], blue: ['ParionsSport'] })[dom[0]]
+      ? ({ red: ['Winamax', 'Betclic'], orange: ['ZEbet'], yellow: ['Bwin', 'Winamax'], green: ['Unibet', 'PMU'], blue: ['ParionsSport'] })[dom[0]]
       : null;
 
     /* canvas OCR : upscale si petit, cap si géant, inversion si ticket sombre */
@@ -180,7 +180,7 @@ const Ocr = (() => {
 
     /* date de l'événement */
     let eventDate = null;
-    if (/aujourd'?hui/i.test(low)) eventDate = localISO(today);
+    if (/aujourd'?hui|\bauj\.?(?=\s|$)/im.test(low)) eventDate = localISO(today);
     else if (/demain/i.test(low)) eventDate = localISO(new Date(+today + 864e5));
     else {
       const MONTHS = { janv: 0, févr: 1, fevr: 1, mars: 2, avr: 3, mai: 4, juin: 5, juil: 6, août: 7, aout: 7, sept: 8, oct: 9, nov: 10, déc: 11, dec: 11 };
@@ -211,6 +211,18 @@ const Ocr = (() => {
       if (m) { competition = m[0].trim().replace(/\b\p{L}/gu, c => c.toUpperCase()); break; }
     }
 
+    /* nettoyage des fragments : bruit d'icônes OCR, jetons parasites, dates/heure en fin */
+    const cleanFrag = s => {
+      let t = String(s)
+        .replace(/^[^0-9A-Za-zÀ-ÿ(]+/, '')                       /* symboles/icônes en tête (©, ®, ✕…) */
+        .replace(/^([a-zà-ÿ]{1,3})\s+(?=[A-ZÀ-Ý])/, '')          /* jeton minuscule court parasite ("sie", "ee"…) */
+        .replace(/\b(?:auj\.?|aujourd'?hui|demain)\b.*$/i, '')    /* date relative en fin de ligne */
+        .replace(/\s\d{1,2}[:h]\d{2}\b.*$/, '')                  /* heure en fin de ligne */
+        .replace(/[^\wÀ-ÿ).%€!?]+$/, '')                          /* ponctuation orpheline en fin */
+        .trim();
+      return t;
+    };
+
     /* lignes "affiche" (Équipe A - Équipe B) */
     const stripOdds = s => s.replace(/(?<!\d)\d{1,3}[.,]\d{2}(?!\d)\s*$/, '').trim();
     const matchLine = l => {
@@ -218,41 +230,75 @@ const Ocr = (() => {
       const m = l.match(/^(.{2,40}?)\s+(?:-|–|—|vs\.?)\s+(.{2,40})$/i);
       if (!m) return null;
       if (/^[\d\s.,]+$/.test(m[1]) && /^[\d\s.,]+$/.test(m[2])) return null; /* score */
-      return (m[1] + ' - ' + m[2]).replace(/\s+/g, ' ').trim();
+      const a = cleanFrag(m[1]), b = cleanFrag(m[2]);
+      if (!a || !b) return null;
+      return (a + ' - ' + b).replace(/\s+/g, ' ').trim();
     };
-    const isBreak = l => /^(mise|gains?|cote totale|total)/i.test(l);
+    const isBreak = l => /^[^A-Za-zÀ-ÿ0-9]*(mise|gains?|cote totale|total|cash ?out|compl[ée]ter|parier|valider|encaiss)/i.test(l);
+    const NAME_MARKET = /^((?:le\s+)?(?:vainqueur|victoire|gagnant)(?:\s+d[ue]\s+match)?|résultat(?:\s+d[ue]\s+match)?)\s*:?\s+(.+)$/i;
+    const TYPE_WORD = /^(simple|combinés?|systèmes?|live|en direct|freebets?|boost)/i;
 
     const matchIdx = [];
     lines.forEach((l, i) => { if (matchLine(l)) matchIdx.push(i); });
 
-    /* extraction des sélections bloc par bloc */
+    /* extraction des sélections : moissonneuse commune, scan avant + arrière */
     const selections = [];
     matchIdx.forEach((idx, k) => {
       const end = k + 1 < matchIdx.length ? matchIdx[k + 1] : lines.length;
-      let market = null, pick = null, odds = null;
-      for (let j = idx + 1; j < end; j++) {
-        const l = lines[j];
-        if (isBreak(l)) break;
-        if (/[·•]/.test(l)) continue; /* ligne compétition·date */
+      const st = { market: null, pick: null, odds: null };
+
+      const harvest = rawLine => {
+        if (/[·•]/.test(rawLine)) return; /* ligne compétition·date */
+        const l = cleanFrag(rawLine);
+        if (!l || TYPE_WORD.test(l)) return;
         const o = oddsInLine(l);
-        if (l.includes(':') && /[a-zà-ÿ]/i.test(l.split(':')[0])) {
+        if (l.includes(':') && /[a-zà-ÿ]{2}/i.test(l.split(':')[0])) {
           const ci = l.indexOf(':');
           const left = l.slice(0, ci).trim();
           let right = l.slice(ci + 1).trim();
-          if (o.length) { odds = odds ?? o[o.length - 1]; right = stripOdds(right); }
-          if (!market) { market = stripOdds(left); pick = right || pick; }
+          if (o.length) { st.odds = st.odds ?? o[o.length - 1]; right = stripOdds(right); }
+          if (!st.market) { st.market = stripOdds(left); st.pick = right || st.pick; }
         } else if (MARKET_HINT.test(l)) {
-          if (!market) market = stripOdds(l);
-          if (o.length) odds = odds ?? o[o.length - 1];
+          if (o.length) st.odds = st.odds ?? o[o.length - 1];
+          const base = stripOdds(l);
+          const nm = base.match(NAME_MARKET);
+          if (nm && /^[A-ZÀ-Ý0-9(]/.test(nm[2].trim())) {
+            if (!st.market) st.market = nm[1].trim();
+            if (!st.pick) st.pick = nm[2].trim();
+          } else if (!st.market) st.market = base;
         } else if (o.length === 1 && /^[\d\s.,x]+$/i.test(l)) {
-          odds = odds ?? o[0]; /* ligne = juste la cote */
-        } else if (!pick && !o.length && l.length <= 40 && /[a-zà-ÿ]/i.test(l)) {
-          pick = l; /* format pick isolé (Betclic) */
-        } else if (o.length && odds == null) {
-          odds = o[o.length - 1];
+          st.odds = st.odds ?? o[0]; /* ligne = juste la cote */
+        } else if (!st.pick && !o.length && l.length <= 40 && /[a-zà-ÿ]/i.test(l)) {
+          st.pick = l; /* format pick isolé (Betclic) */
+        } else if (o.length) {
+          if (st.odds == null) st.odds = o[o.length - 1];
+          if (!st.pick) {
+            const t = stripOdds(l);
+            if (/[a-zà-ÿ]/i.test(t) && t.length <= 40) st.pick = t;
+          }
+        }
+      };
+
+      /* scan avant (lignes sous l'affiche) */
+      for (let j = idx + 1; j < end; j++) {
+        if (isBreak(lines[j])) break;
+        harvest(lines[j]);
+      }
+      /* scan arrière (format compact : pick/cote AU-DESSUS de l'affiche, 1er bloc uniquement) */
+      if (k === 0 && (st.odds == null || (!st.pick && !st.market))) {
+        for (let j = idx - 1; j >= 0; j--) {
+          if (isBreak(lines[j])) break;
+          harvest(lines[j]);
+          if (st.odds != null && (st.pick || st.market)) break;
         }
       }
-      selections.push({ event: matchLine(lines[idx]), market, pick, odds });
+
+      selections.push({
+        event: matchLine(lines[idx]),
+        market: st.market ? cleanFrag(st.market) || null : null,
+        pick: st.pick ? cleanFrag(st.pick) || null : null,
+        odds: st.odds
+      });
     });
 
     /* repli : aucune affiche détectée mais un marché coté */
@@ -298,6 +344,20 @@ const Ocr = (() => {
     if (!sport) {
       const mk = selections.map(s => s.market || '').join(' ');
       for (const [re, sp] of MARKET_SPORT) if (re.test(mk)) { sport = sp; break; }
+    }
+    /* heuristique : "Prénom Nom - Prénom Nom" sur un marché Vainqueur → tennis (défaut FR pour duels de personnes) */
+    if (!sport) {
+      const TEAM_WORD = /\b(fc|cf|sc|ac|as|rc|us|st|utd|united|city|real|club|racing|olympique|saint|athletic|sporting|inter|dynamo)\b/i;
+      for (const s of selections) {
+        if (!s.event || !/vainqueur|victoire|gagnant/i.test(s.market || '')) continue;
+        const sides = s.event.split(/\s+-\s+/);
+        if (sides.length === 2 && sides.every(sd => {
+          const toks = sd.trim().split(/\s+/);
+          return toks.length >= 2 && toks.length <= 3
+            && toks.every(t => /^[A-ZÀ-Ý]/.test(t))
+            && !TEAM_WORD.test(sd) && !/\d/.test(sd);
+        })) { sport = 'Tennis'; break; }
+      }
     }
 
     const empty = !stake && !totalOdds && !selections.length;
