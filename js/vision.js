@@ -25,11 +25,14 @@ const Vision = (() => {
     });
   }
 
-  function buildPrompt() {
+  function buildPrompt(forcedBook) {
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
     const weekday = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'][now.getDay()];
-    return `Tu analyses un screenshot de ticket(s) de pari sportif (bookmaker français ou international). Date d'aujourd'hui : ${weekday} ${today}.
+    const bookLine = forcedBook
+      ? `\n\nIMPORTANT : l'utilisateur a indiqué que le bookmaker est "${forcedBook}". Utilise EXACTEMENT cette valeur pour le champ "bookmaker" de chaque pari, sans essayer de le deviner depuis l'image.`
+      : '';
+    return `Tu analyses un screenshot de ticket(s) de pari sportif (bookmaker français ou international). Date d'aujourd'hui : ${weekday} ${today}.${bookLine}
 
 Extrais TOUTES les informations visibles et réponds UNIQUEMENT avec un JSON valide, sans texte avant/après, sans backticks markdown. Schéma :
 
@@ -64,7 +67,7 @@ Règles :
 - Si une info est absente ou illisible : null. N'invente RIEN.`;
   }
 
-  async function analyze(images) {
+  async function analyze(images, opts = {}) {
     const { apiKey, model } = Store.state.settings;
     if (!apiKey) throw new Error('NO_API_KEY');
 
@@ -72,7 +75,7 @@ Règles :
       type: 'image',
       source: { type: 'base64', media_type: img.mediaType, data: img.base64 }
     }));
-    content.push({ type: 'text', text: buildPrompt() });
+    content.push({ type: 'text', text: buildPrompt(opts.forcedBook) });
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',

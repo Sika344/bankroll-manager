@@ -141,10 +141,13 @@ const Ocr = (() => {
     const low = text.toLowerCase();
     const lines = text.split(/\n/).map(l => l.replace(/\s{2,}/g, ' ').trim()).filter(Boolean);
 
-    /* bookmaker : mots-clés puis couleur */
+    /* bookmaker : présélection utilisateur > mots-clés > couleur */
     let bookmaker = null;
-    for (const [w, name] of BOOK_WORDS) if (low.includes(w)) { bookmaker = name; break; }
-    if (!bookmaker && opts.colorCandidates?.length === 1) bookmaker = opts.colorCandidates[0];
+    if (opts.forcedBook) bookmaker = opts.forcedBook;
+    else {
+      for (const [w, name] of BOOK_WORDS) if (low.includes(w)) { bookmaker = name; break; }
+      if (!bookmaker && opts.colorCandidates?.length === 1) bookmaker = opts.colorCandidates[0];
+    }
 
     /* montants */
     const mStake = low.match(/mise(?:\s+totale)?[^0-9€]{0,15}(\d[\d\s]*[.,]?\d*)\s*€/i);
@@ -307,7 +310,7 @@ const Ocr = (() => {
   }
 
   /* ── API principale ─────────────────────────── */
-  async function analyze(files, onStatus) {
+  async function analyze(files, onStatus, opts = {}) {
     statusCb = onStatus || null;
     const preps = [];
     for (const f of files) preps.push(prep(await loadImage(f)));
@@ -318,7 +321,7 @@ const Ocr = (() => {
       statusPrefix = files.length > 1 ? `Ticket ${i + 1}/${files.length} — ` : '';
       onStatus?.(`${statusPrefix}Lecture du ticket… 0 %`);
       const { data } = await w.recognize(preps[i].canvas);
-      bets.push(parseText(data.text || '', { colorCandidates: preps[i].colorCandidates }));
+      bets.push(parseText(data.text || '', { colorCandidates: preps[i].colorCandidates, forcedBook: opts.forcedBook }));
     }
     statusCb = null; statusPrefix = '';
     return { bets, previews };

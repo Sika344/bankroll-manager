@@ -57,13 +57,21 @@ const App = (() => {
     }, { saveLabel: 'Enregistrer les modifications', cancelable: true, onCancel: () => bg.classList.remove('open') });
   }
 
+  function updateEngineHint() {
+    const engine = Store.state.settings.engine || 'ocr';
+    const book = document.getElementById('preset-book').value;
+    const engineTxt = engine === 'ocr'
+      ? 'MOTEUR : <b style="color:var(--green)">OCR LOCAL</b> — gratuit, 100 % navigateur'
+      : 'MOTEUR : <b style="color:var(--violet)">CLAUDE VISION</b> — clé API requise';
+    const bookTxt = book ? ` · BOOK : <b style="color:var(--green)">${BetForm.esc(book)}</b> (imposé)` : ' · BOOK : auto-détecté';
+    document.getElementById('engine-hint').innerHTML = engineTxt + bookTxt + ' · <a href="#settings" onclick="App.go(\'settings\')" style="color:var(--text2);text-decoration:underline">réglages</a>';
+  }
+
   /* ── Mode ajout : screenshot ────────────────── */
   function checkApiWarning() {
     const engine = Store.state.settings.engine || 'ocr';
     document.getElementById('api-warning').classList.toggle('hide', !(engine === 'claude' && !Store.state.settings.apiKey));
-    document.getElementById('engine-hint').innerHTML = engine === 'ocr'
-      ? 'MOTEUR : <b style="color:var(--green)">OCR LOCAL</b> — gratuit, 100 % navigateur, aucune donnée envoyée · <a href="#settings" onclick="App.go(\'settings\')" style="color:var(--text2);text-decoration:underline">changer</a>'
-      : 'MOTEUR : <b style="color:var(--violet)">CLAUDE VISION</b> — clé API requise · <a href="#settings" onclick="App.go(\'settings\')" style="color:var(--text2);text-decoration:underline">changer</a>';
+    updateEngineHint();
   }
 
   async function handleFiles(files) {
@@ -75,6 +83,8 @@ const App = (() => {
       go('settings');
       return;
     }
+
+    const presetBook = document.getElementById('preset-book').value || null;
 
     const idle = document.getElementById('dz-idle');
     const busy = document.getElementById('dz-busy');
@@ -88,14 +98,15 @@ const App = (() => {
     try {
       let bets;
       if (engine === 'ocr') {
-        const res = await Ocr.analyze(imgs, msg => sub.textContent = msg);
+        const res = await Ocr.analyze(imgs, msg => sub.textContent = msg, { forcedBook: presetBook });
         preview.innerHTML = res.previews.map(u => `<img src="${u}" alt="ticket">`).join('');
         bets = res.bets;
       } else {
         const compressed = await Promise.all(imgs.map(Vision.compress));
         preview.innerHTML = compressed.map(c => `<img src="${c.dataUrl}" alt="ticket">`).join('');
-        bets = await Vision.analyze(compressed);
+        bets = await Vision.analyze(compressed, { forcedBook: presetBook });
       }
+      if (presetBook) bets.forEach(b => { b.bookmaker = presetBook; }); /* override de sécurité */
       busy.classList.add('hide');
       preview.classList.remove('hide');
       renderDetected(bets);
@@ -248,6 +259,12 @@ const App = (() => {
   /* ── Init ───────────────────────────────────── */
   function init() {
     document.querySelectorAll('.nav-tab').forEach(t => t.addEventListener('click', () => go(t.dataset.view)));
+
+    const presetSel = document.getElementById('preset-book');
+    BetForm.BOOKS.filter(b => b !== 'Autre').forEach(b => {
+      const o = document.createElement('option'); o.value = b; o.textContent = b; presetSel.appendChild(o);
+    });
+    presetSel.addEventListener('change', updateEngineHint);
 
     document.getElementById('mode-screen').addEventListener('click', () => {
       document.getElementById('mode-screen').classList.add('active');
