@@ -6,7 +6,7 @@ Gestion de bankroll paris sportifs — 100 % statique, hébergé sur GitHub Page
 
 ## Fonctionnalités
 
-- **Ajout par screenshot** : glisse/colle un ticket (Winamax, Betclic, Unibet…), Claude Vision détecte bookmaker, sélections, cotes, mise, dates, freebet/boost, combinés — tu valides, c'est enregistré.
+- **Ajout par screenshot, sans clé API** : glisse/colle un ticket (Winamax, Betclic, Unibet…), l'**OCR local** (Tesseract.js, 100 % navigateur, gratuit) détecte bookmaker (mots-clés + couleurs dominantes), sélections, cotes, mise, cote totale, dates ("Aujourd'hui/Demain"), live, freebet, boost, statut — tu valides, c'est enregistré. Les tickets sombres sont automatiquement inversés avant lecture. En option : moteur **Claude Vision** (clé API) pour la précision max.
 - **Ajout manuel** complet avec calcul live du % de bankroll, unités, edge & Kelly.
 - **Dashboard** : bankroll, courbe d'évolution, yield, winrate, drawdown max, séries, espérance/pari, exposition en cours.
 - **Historique** : filtres (statut, book, sport, source, période), recherche, tri, règlement rapide, édition, suppression.
@@ -16,12 +16,12 @@ Gestion de bankroll paris sportifs — 100 % statique, hébergé sur GitHub Page
 ## Configuration
 
 1. **Réglages → Bankroll** : bankroll initiale, valeur d'unité, devise.
-2. **Réglages → Détection screenshot** : clé API Anthropic ([console.anthropic.com](https://console.anthropic.com)). Appel direct navigateur → API, la clé reste en localStorage. ~0,003 € par analyse (Haiku 4.5).
+2. **Détection screenshot** : rien à configurer — l'OCR local est actif par défaut (premier lancement : téléchargement du modèle ~4 Mo, mis en cache). Option Claude Vision dans Réglages si besoin (clé API Anthropic, ~0,003 €/analyse).
 3. **Réglages → Sync GitHub** *(optionnel)* : PAT scope `gist` pour sauvegarder/restaurer sur tous tes appareils.
 
 ## Stack
 
-HTML/CSS/JS vanilla · Chart.js (CDN) · API Anthropic (vision) · API GitHub Gist (sync). Aucun build, aucun backend.
+HTML/CSS/JS vanilla · Chart.js (CDN) · Tesseract.js (OCR local) · API Anthropic (vision, optionnel) · API GitHub Gist (sync). Aucun build, aucun backend.
 
 ## Modèle de données (pari)
 

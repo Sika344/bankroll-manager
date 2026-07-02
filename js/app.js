@@ -59,14 +59,19 @@ const App = (() => {
 
   /* ── Mode ajout : screenshot ────────────────── */
   function checkApiWarning() {
-    document.getElementById('api-warning').classList.toggle('hide', !!Store.state.settings.apiKey);
+    const engine = Store.state.settings.engine || 'ocr';
+    document.getElementById('api-warning').classList.toggle('hide', !(engine === 'claude' && !Store.state.settings.apiKey));
+    document.getElementById('engine-hint').innerHTML = engine === 'ocr'
+      ? 'MOTEUR : <b style="color:var(--green)">OCR LOCAL</b> — gratuit, 100 % navigateur, aucune donnée envoyée · <a href="#settings" onclick="App.go(\'settings\')" style="color:var(--text2);text-decoration:underline">changer</a>'
+      : 'MOTEUR : <b style="color:var(--violet)">CLAUDE VISION</b> — clé API requise · <a href="#settings" onclick="App.go(\'settings\')" style="color:var(--text2);text-decoration:underline">changer</a>';
   }
 
   async function handleFiles(files) {
     const imgs = [...files].filter(f => f.type.startsWith('image/'));
     if (!imgs.length) { UI.toast('Aucune image reconnue', 'err'); return; }
-    if (!Store.state.settings.apiKey) {
-      UI.toast('Ajoute ta clé API Anthropic dans Réglages pour la détection', 'err');
+    const engine = Store.state.settings.engine || 'ocr';
+    if (engine === 'claude' && !Store.state.settings.apiKey) {
+      UI.toast('Clé API manquante — ajoute-la dans Réglages ou passe sur le moteur OCR local (gratuit)', 'err');
       go('settings');
       return;
     }
@@ -74,19 +79,29 @@ const App = (() => {
     const idle = document.getElementById('dz-idle');
     const busy = document.getElementById('dz-busy');
     const preview = document.getElementById('dz-preview');
+    const sub = document.getElementById('dz-busy-sub');
     idle.classList.add('hide');
     preview.classList.add('hide');
     busy.classList.remove('hide');
-    document.getElementById('dz-busy-sub').textContent = `Lecture de ${imgs.length} image${imgs.length > 1 ? 's' : ''} par Claude…`;
+    sub.textContent = engine === 'ocr' ? 'Initialisation du moteur OCR local…' : `Lecture de ${imgs.length} image${imgs.length > 1 ? 's' : ''} par Claude…`;
 
     try {
-      const compressed = await Promise.all(imgs.map(Vision.compress));
-      preview.innerHTML = compressed.map(c => `<img src="${c.dataUrl}" alt="ticket">`).join('');
-      const bets = await Vision.analyze(compressed);
+      let bets;
+      if (engine === 'ocr') {
+        const res = await Ocr.analyze(imgs, msg => sub.textContent = msg);
+        preview.innerHTML = res.previews.map(u => `<img src="${u}" alt="ticket">`).join('');
+        bets = res.bets;
+      } else {
+        const compressed = await Promise.all(imgs.map(Vision.compress));
+        preview.innerHTML = compressed.map(c => `<img src="${c.dataUrl}" alt="ticket">`).join('');
+        bets = await Vision.analyze(compressed);
+      }
       busy.classList.add('hide');
       preview.classList.remove('hide');
       renderDetected(bets);
-      UI.toast(`${bets.length} pari${bets.length > 1 ? 's' : ''} détecté${bets.length > 1 ? 's' : ''} — vérifie et valide`, 'ok');
+      const partial = bets.filter(b => b._empty).length;
+      if (partial === bets.length) UI.toast('Lecture difficile — complète le formulaire (ou essaie Claude Vision dans Réglages)', 'err');
+      else UI.toast(`${bets.length} pari${bets.length > 1 ? 's' : ''} détecté${bets.length > 1 ? 's' : ''} — vérifie et valide`, 'ok');
     } catch (e) {
       busy.classList.add('hide');
       idle.classList.remove('hide');
@@ -101,8 +116,11 @@ const App = (() => {
     bets.forEach((d, i) => {
       const card = document.createElement('div');
       card.className = 'detected-card';
+      const badge = d._empty
+        ? '<span class="badge badge-amber">⚠ LECTURE PARTIELLE</span>'
+        : `<span class="badge badge-green">DÉTECTÉ #${i + 1}</span>`;
       card.innerHTML = `<div class="detected-head">
-        <span class="badge badge-green">DÉTECTÉ #${i + 1}</span>
+        ${badge}
         <span class="dh-title">${BetForm.esc(d.bookmaker || 'Bookmaker ?')} — ${BetForm.esc((d.selections?.[0]?.pick) || d.sport || 'Pari')}</span>
       </div><div class="mount"></div>`;
       zone.appendChild(card);
@@ -146,6 +164,7 @@ const App = (() => {
     document.getElementById('set-initial').value = s.initialBankroll;
     document.getElementById('set-unit').value = s.unitValue;
     document.getElementById('set-currency').value = s.currency;
+    document.getElementById('set-engine').value = s.engine || 'ocr';
     document.getElementById('set-apikey').value = s.apiKey;
     document.getElementById('set-model').value = s.model;
     document.getElementById('set-ghpat').value = s.ghPat;
@@ -163,12 +182,19 @@ const App = (() => {
       UI.toast('Bankroll enregistrée ✓', 'ok');
     });
 
+    document.getElementById('set-engine').addEventListener('change', () => {
+      Store.state.settings.engine = document.getElementById('set-engine').value;
+      Store.save();
+      UI.toast(Store.state.settings.engine === 'ocr' ? 'Moteur : OCR local ✓ (gratuit, sans clé)' : 'Moteur : Claude Vision ✓', 'ok');
+    });
+
     document.getElementById('save-api').addEventListener('click', () => {
       const s = Store.state.settings;
+      s.engine = document.getElementById('set-engine').value;
       s.apiKey = document.getElementById('set-apikey').value.trim();
       s.model = document.getElementById('set-model').value;
       Store.save();
-      UI.toast('Configuration API enregistrée ✓', 'ok');
+      UI.toast('Configuration détection enregistrée ✓', 'ok');
     });
 
     document.getElementById('test-api').addEventListener('click', async () => {
