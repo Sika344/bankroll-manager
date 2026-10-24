@@ -1,306 +1,320 @@
-/* ══════════════════════════════════════════════
-   APP — navigation & orchestration
-   ══════════════════════════════════════════════ */
-const App = (() => {
+/* ══════════════════════════════════════════════════════════════════════════
+   Bankroll Manager — orchestration (BK.App)
 
-  let currentView = 'dashboard';
+   Ordre de démarrage : l'appareil d'abord (affichage immédiat, avec reprise
+   du Bankroll Manager de juillet), puis le compte MatchUp s'il y en a un.
+   BK.Caps dit ce que le compte permet ; tout le reste du site le lit là.
+   ══════════════════════════════════════════════════════════════════════════ */
+(function (BK) {
+  'use strict';
+  var U = BK.U, S = BK.Store, UI = BK.UI, esc = U.esc;
+  var VIEWS = ['dash', 'add', 'hist', 'ana', 'set'];
+  var app = { view: 'dash', key: null, lastSettle: 0, raf: 0, retry: null };
+  BK.Caps = { account: false, premium: false, autoSettle: false };
 
-  /* ── Navigation ─────────────────────────────── */
-  function go(view) {
-    currentView = view;
-    document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + view));
-    document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
-    location.hash = view;
-    refresh();
-    window.scrollTo({ top: 0 });
+  function $(id) { return document.getElementById(id); }
+
+  /* ── Navigation ───────────────────────────────────────────────────────── */
+  function go(v, push) {
+    if (VIEWS.indexOf(v) === -1) v = 'dash';
+    app.view = v;
+    document.querySelectorAll('.bk-tabs [data-view]').forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.view === v)); });
+    document.querySelectorAll('.bk-view').forEach(function (s) { s.hidden = s.id !== 'v-' + v; });
+    if (push !== false && location.hash !== '#' + v) history.replaceState(null, '', '#' + v);
+    renderView();
+  }
+  function renderView() {
+    if (app.view === 'dash') UI.dash();
+    else if (app.view === 'add') BK.Add.render();
+    else if (app.view === 'hist') UI.hist();
+    else if (app.view === 'ana') UI.ana();
+    else if (app.view === 'set') UI.settings();
+  }
+  function renderAll() {
+    cancelAnimationFrame(app.raf);
+    app.raf = requestAnimationFrame(function () {
+      // Une fois des paris enregistrés, l'accroche d'accueil laisse la place
+      // aux chiffres (sur téléphone elle occupait le premier écran).
+      document.body.classList.toggle('bk-compact', S.state.bets.length > 0);
+      UI.acct(); UI.syncBar(); UI.gate(); renderView();
+    });
   }
 
-  function refresh() {
-    if (currentView === 'dashboard') UI.renderDashboard();
-    if (currentView === 'history') UI.renderHistory();
-    if (currentView === 'stats') UI.renderStats();
-    if (currentView === 'add') checkApiWarning();
-    if (currentView === 'settings') loadSettingsForm();
+  /* ── Compte ───────────────────────────────────────────────────────────── */
+  function onAuth(A) {
+    var user = A && A.user, premium = !!(A && A.premium);
+    var key = (user ? user.id : 'anon') + '|' + premium;
+    UI.acct();
+    if (key === app.key) return;            // rappelé à chaque rafraîchissement de jeton
+    app.key = key;
+    BK.Caps = { account: !!user, premium: premium, autoSettle: premium };
+    BK.MU.invalidate();                     // cartes réduites ↔ entières
+    clearTimeout(app.retry);
+    S.connect(user ? user.id : null, premium).then(function () {
+      renderAll();
+      if (S.mode === 'device' && S.reason === 'pending') app.retry = setTimeout(function () { app.key = null; onAuth(BK.Auth); }, 60e3);
+      if (premium) autoSettle(true);
+    });
+    renderAll();
   }
 
-  /* ── Actions paris ──────────────────────────── */
-  function quickSettle(id, status) {
-    if (status === 'cashout') {
-      const v = prompt('Montant récupéré au cashout (€) :');
-      if (v == null) return;
-      Store.settleBet(id, 'cashout', +String(v).replace(',', '.'));
-    } else {
-      Store.settleBet(id, status);
+  /* ── Règlement automatique + horaires / clôtures depuis le programme ──── */
+  async function autoSettle(force) {
+    if (!S.canWrite()) return;
+    if (!force && Date.now() - app.lastSettle < 4 * 60e3) return;
+    app.lastSettle = Date.now();
+    try {
+      if (S.state.bets.some(function (b) { return b.status === 'pending' && (b.selections || []).some(function (s) { return s.mu; }); })) {
+        await BK.MU.load();
+        var p1 = BK.MU.refreshFromSlate(S.state.bets);
+        if (p1.length) S.applyPatches(p1);
+      }
+      if (!BK.Caps.autoSettle) return;      // résultats = fichiers Premium de MatchUp
+      var r = await BK.Settle.run(S.state.bets);
+      if (r.patches.length) {
+        S.applyPatches(r.patches);
+        var regles = r.patches.filter(function (p) { return p.patch.status; }).length;
+        var revue = r.patches.filter(function (p) { return !p.patch.status && (p.patch.selections || []).some(function (s) { return s.review; }); }).length;
+        if (regles) UI.toast(regles + ' pari' + (regles > 1 ? 's réglés' : ' réglé') + ' automatiquement à partir des scores MatchUp', 'ok');
+        if (revue) UI.toast(revue + ' pari' + (revue > 1 ? 's' : '') + ' à vérifier (abandon, marché libre…)', 'warn');
+      }
+      if (r.errors.length) console.warn('[bk] résultats indisponibles :', r.errors.join(' · '));
+    } catch (e) {
+      console.warn('[bk] règlement automatique', e);
     }
-    const labels = { won: 'Pari gagné ✓', lost: 'Pari perdu', void: 'Pari remboursé', cashout: 'Cashout enregistré' };
-    UI.toast(labels[status] || 'Pari mis à jour', status === 'won' ? 'ok' : 'err');
-    refresh();
   }
 
-  function deleteBet(id) {
-    if (!confirm('Supprimer définitivement ce pari ?')) return;
-    Store.deleteBet(id);
-    UI.toast('Pari supprimé');
-    refresh();
+  /* ── Export ───────────────────────────────────────────────────────────── */
+  function download(name, content, type) {
+    var blob = new Blob([content], { type: type });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+  }
+  function exportCSV() {
+    var cols = ['Date', 'Bookmaker', 'Type', 'Événement', 'Marché', 'Sélection', 'Circuit', 'Tournoi', 'Surface', 'Cote', 'Mise', 'Statut', 'Profit',
+      'Réglé automatiquement', 'Value MatchUp', 'Freebet', 'Boost', 'Live', 'Source', 'Notes'];
+    // Une cellule de TEXTE qui commence par = + - @ serait lue comme une formule
+    // par Excel (injection CSV, via un fichier importé par exemple) : on la
+    // préfixe d'une apostrophe. Les nombres (« -15,00 ») restent des nombres.
+    var q = function (v) {
+      var t = String(v == null ? '' : v);
+      if (/^[=+\-@\t\r]/.test(t) && !/^-?\d+(,\d+)?$/.test(t)) t = "'" + t;
+      return '"' + t.replace(/"/g, '""') + '"';
+    };
+    var num = function (v) { return v == null ? '' : String(+(+v).toFixed(2)).replace('.', ','); };
+    var rows = S.state.bets.slice().sort(function (a, b) { return String(a.eventDate).localeCompare(String(b.eventDate)); }).map(function (b) {
+      var s = b.selections || [], mu = s[0] && s[0].mu, f = s.length === 1 ? BK.Stats.follows(s[0]) : null;
+      return [b.eventDate, b.bookmaker, b.betType, s.map(function (x) { return x.event; }).join(' + '), s.map(function (x) { return x.market; }).join(' + '),
+        s.map(function (x) { return x.pick; }).join(' + '), mu ? BK.MU.CIRCUIT[mu.circuit] : '', mu ? mu.tournament : b.competition,
+        mu ? BK.MU.surfaceLabel(mu.surface, mu.indoor) : '', num(BK.Stats.oddsOf(b)), num(b.stake), (U.STATUS[b.status] || [b.status])[0],
+        num(BK.Stats.betProfit(b)), b.autoSettled ? 'oui' : 'non', f === true ? 'dans le sens' : f === false ? 'contre' : '',
+        b.isFreebet ? 'oui' : '', b.isBoost ? 'oui' : '', b.isLive ? 'oui' : '', b.source, b.notes].map(q).join(';');
+    });
+    download('bankroll-' + U.today() + '.csv', '﻿' + cols.map(q).join(';') + '\n' + rows.join('\n'), 'text/csv;charset=utf-8');
   }
 
-  function editBet(id) {
-    const bet = Store.state.bets.find(b => b.id === id);
-    if (!bet) return;
-    const bg = document.getElementById('modal-bg');
-    bg.classList.add('open');
-    BetForm.render(document.getElementById('modal-form-mount'), bet, data => {
-      Store.updateBet(id, data);
-      bg.classList.remove('open');
-      UI.toast('Pari modifié ✓', 'ok');
-      refresh();
-    }, { saveLabel: 'Enregistrer les modifications', cancelable: true, onCancel: () => bg.classList.remove('open') });
+  /* ── Actions ──────────────────────────────────────────────────────────── */
+  function edit(id) {
+    var b = S.state.bets.find(function (x) { return x.id === id; });
+    if (!b) return;
+    UI.modal('Modifier le pari', function (body) {
+      BK.Form.mount(body, b, {
+        full: true, saveLabel: 'Enregistrer les modifications', linkPicker: BK.Add.linkPicker, toast: UI.toast,
+        onCancel: UI.closeModal,
+        onSave: function (raw) { S.updateBet(id, raw, { manual: true }); UI.closeModal(); UI.toast('Pari modifié ✓', 'ok'); }
+      });
+    });
   }
 
-  function updateEngineHint() {
-    const engine = Store.state.settings.engine || 'ocr';
-    const book = document.getElementById('preset-book').value;
-    const engineTxt = engine === 'ocr'
-      ? 'MOTEUR : <b style="color:var(--green)">OCR LOCAL</b> — gratuit, 100 % navigateur'
-      : 'MOTEUR : <b style="color:var(--violet)">CLAUDE VISION</b> — clé API requise';
-    const bookTxt = book ? ` · BOOK : <b style="color:var(--green)">${BetForm.esc(book)}</b> (imposé)` : ' · BOOK : auto-détecté';
-    document.getElementById('engine-hint').innerHTML = engineTxt + bookTxt + ' · <a href="#settings" onclick="App.go(\'settings\')" style="color:var(--text2);text-decoration:underline">réglages</a>';
+  async function logout() {
+    var reste = 0;
+    if (S.mode === 'cloud') { try { await S.flush(); } catch (_) { /* gardé */ } reste = S.pendingWrites(); }
+    if (reste && !confirm(reste + ' modification' + (reste > 1 ? 's ne sont' : ' n\'est') + ' pas encore envoyée' + (reste > 1 ? 's' : '') +
+      ' à ton compte (pas de connexion ?). Elles partiront à ta prochaine connexion sur cet appareil. Se déconnecter quand même ?')) return;
+    UI.closeModal();
+    await BK.Auth.signOut();
+    UI.toast('Déconnecté. Tes paris synchronisés t\'attendent sur ton compte.', 'info');
   }
 
-  /* ── Mode ajout : screenshot ────────────────── */
-  function checkApiWarning() {
-    const engine = Store.state.settings.engine || 'ocr';
-    document.getElementById('api-warning').classList.toggle('hide', !(engine === 'claude' && !Store.state.settings.apiKey));
-    updateEngineHint();
+  function onClick(e) {
+    if (BK.Add.onClick(e)) return;
+    var b = e.target.closest('[data-act], [data-view]');
+    if (!b) return;
+    if (b.matches('.bk-tabs [data-view]')) { go(b.dataset.view); return; }
+    var act = b.dataset.act;
+    if (!act) return;
+    try {
+      switch (act) {
+        case 'go':
+          if (b.dataset.filter) { UI.H.status = b.dataset.filter; }
+          go(b.dataset.view);
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+          break;
+        case 'account': UI.accountModal(); break;
+        case 'login': UI.loginModal(); break;
+        case 'logout': logout(); break;
+        case 'forgot': {
+          var mail = document.querySelector('#bk-modal input[name=email]');
+          var msg = document.querySelector('#bk-modal [data-z=loginmsg]');
+          var v = mail ? mail.value.trim() : '';
+          if (!/.+@.+\..+/.test(v)) { if (msg) msg.textContent = 'Indique ton e-mail ci-dessus, puis touche « Mot de passe oublié ? ».'; break; }
+          BK.Auth.resetPassword(v).then(function () {
+            if (msg) msg.textContent = 'Si un compte existe pour cette adresse, un e-mail vient de partir. Son lien ouvre matchup-tennis.fr pour choisir un nouveau mot de passe ; reviens ensuite te connecter ici.';
+          }, function (err) { if (msg) msg.textContent = err.message; });
+          break;
+        }
+        case 'refresh-premium':
+          BK.Auth.refresh(true).then(function (A) {
+            UI.toast(A.premium ? 'Premium actif ✓' : 'Pas encore d\'abonnement actif sur ce compte. Il peut falloir une minute après le paiement.', A.premium ? 'ok' : 'info');
+            if (!A.premium) UI.settings();
+          });
+          break;
+        case 'merge': { var n = S.mergeDevice(); UI.toast(n + ' pari' + (n > 1 ? 's ajoutés' : ' ajouté') + ' à ton compte ✓', 'ok'); break; }
+        case 'merge-later': S.mergeLater(); renderAll(); break;
+        case 'copy': { var c = S.copyAccount(); UI.toast(c + ' pari' + (c > 1 ? 's copiés' : ' copié') + ' sur cet appareil ✓', 'ok'); break; }
+        case 'copy-later': S.copyLater(); renderAll(); break;
+        case 'notice-ok': S.notice = null; renderAll(); break;
+        case 'demo': S.startDemo(BK.Demo.build()); go('dash'); window.scrollTo({ top: 0 }); break;
+        case 'demo-stop': S.stopDemo(); go('dash'); break;
+        case 'settle': {
+          var st = b.dataset.st;
+          S.updateBet(b.dataset.id, { status: st }, { manual: true });
+          UI.toast(st === 'won' ? 'Pari gagné ✓' : st === 'lost' ? 'Pari perdu' : 'Pari remboursé', st === 'won' ? 'ok' : 'info');
+          break;
+        }
+        case 'edit': edit(b.dataset.id); break;
+        case 'del':
+          if (confirm('Supprimer définitivement ce pari ?')) { S.deleteBet(b.dataset.id); UI.toast('Pari supprimé', 'info'); }
+          break;
+        case 'more': UI.H.limit += 100; UI.hist(); break;
+        case 'anatab': UI.setAnaTab(b.dataset.tab); break;
+        case 'export-json': download('bankroll-' + U.today() + '.json', JSON.stringify(S.exportData(), null, 2), 'application/json'); break;
+        case 'export-csv': exportCSV(); break;
+        case 'import': { var f = document.querySelector('[data-z=import]'); if (f) f.click(); break; }
+        case 'reset': {
+          var partout = S.mode === 'cloud';
+          if (!confirm('Effacer TOUS tes paris et réglages ? C\'est définitif.')) break;
+          if (!confirm(partout ? 'Dernière confirmation : tout effacer, sur ton compte et tous tes appareils ?' : 'Dernière confirmation : tout effacer de cet appareil ? (pense à exporter avant)')) break;
+          S.resetAll().then(function () { UI.toast('Tout a été effacé', 'info'); }, function (err) { UI.toast(err.message || 'Effacement impossible', 'err'); });
+          break;
+        }
+        case 'mclose': UI.closeModal(); break;
+      }
+    } catch (err) {
+      UI.toast(err && err.message || 'Action impossible', 'err');
+    }
   }
 
-  async function handleFiles(files) {
-    const imgs = [...files].filter(f => f.type.startsWith('image/'));
-    if (!imgs.length) { UI.toast('Aucune image reconnue', 'err'); return; }
-    const engine = Store.state.settings.engine || 'ocr';
-    if (engine === 'claude' && !Store.state.settings.apiKey) {
-      UI.toast('Clé API manquante — ajoute-la dans Réglages ou passe sur le moteur OCR local (gratuit)', 'err');
-      go('settings');
+  function onSubmit(e) {
+    var f = e.target.closest('form[data-form]');
+    if (!f) return;
+    e.preventDefault();
+    var val = function (n) { var x = f.querySelector('[name="' + n + '"]'); return x ? x.value : null; };
+    try {
+      if (f.dataset.form === 'login') {
+        var btn = f.querySelector('button[type=submit]'), msg = f.querySelector('[data-z=loginmsg]');
+        if (btn) btn.disabled = true;
+        if (msg) msg.textContent = 'Connexion…';
+        BK.Auth.signIn(val('email'), val('password')).then(function (A) {
+          UI.closeModal();
+          UI.toast(A.premium ? 'Connecté · Premium ✓' : 'Connecté (compte gratuit)', 'ok');
+        }, function (err) {
+          if (msg) msg.textContent = err.message;
+          if (btn) btn.disabled = false;
+        });
+        return;
+      }
+      if (f.dataset.form === 'onboard') {
+        var ini = U.num(val('initialBankroll'));
+        if (!(ini > 0)) { UI.toast('Indique ta bankroll de départ', 'err'); return; }
+        S.saveSettings({ initialBankroll: ini, unitValue: U.num(val('unitValue')) || 0 });
+        UI.toast('Bankroll enregistrée ✓', 'ok');
+      } else if (f.dataset.form === 'bankroll') {
+        S.saveSettings({ initialBankroll: U.num(val('initialBankroll')) || 0, unitValue: U.num(val('unitValue')) || 0,
+          currency: val('currency') || 'EUR', defaultBook: val('defaultBook') || '',
+          customBooks: String(val('customBooks') || '').split(/[,;\n]/) });
+        UI.toast('Réglages enregistrés ✓', 'ok');
+      } else if (f.dataset.form === 'guard') {
+        S.saveSettings({ maxStakePct: U.num(val('maxStakePct')), monthlyLossLimit: U.num(val('monthlyLossLimit')),
+          lossStreakAlert: U.num(val('lossStreakAlert')) });
+        UI.toast('Garde-fous enregistrés ✓', 'ok');
+      }
+    } catch (err) { UI.toast(err.message || 'Enregistrement impossible', 'err'); }
+  }
+
+  function onInput(e) {
+    if (BK.Add.onInput(e)) return;
+    var h = e.target && e.target.dataset && e.target.dataset.h;
+    if (h && UI.H[h] !== e.target.value) { UI.H[h] = e.target.value; UI.H.limit = 60; UI.hist(); }
+  }
+
+  function onChange(e) {
+    if (e.target && e.target.matches && e.target.matches('[data-z=import]')) {
+      var file = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      var rd = new FileReader();
+      rd.onload = function () {
+        try {
+          var n = S.importData(JSON.parse(rd.result));
+          UI.toast(n + ' pari' + (n > 1 ? 's importés' : ' importé') + ' ✓', 'ok');
+        } catch (err) { UI.toast('Import impossible : ' + (err.message || 'fichier illisible'), 'err'); }
+      };
+      rd.readAsText(file);
       return;
     }
+    onInput(e);
+  }
 
-    const presetBook = document.getElementById('preset-book').value || null;
-
-    const idle = document.getElementById('dz-idle');
-    const busy = document.getElementById('dz-busy');
-    const preview = document.getElementById('dz-preview');
-    const sub = document.getElementById('dz-busy-sub');
-    idle.classList.add('hide');
-    preview.classList.add('hide');
-    busy.classList.remove('hide');
-    sub.textContent = engine === 'ocr' ? 'Initialisation du moteur OCR local…' : `Lecture de ${imgs.length} image${imgs.length > 1 ? 's' : ''} par Claude…`;
-
+  /* ── Démarrage ────────────────────────────────────────────────────────── */
+  /** Compte synchronisé la dernière fois ET session encore présente : la
+   *  copie du compte s'affiche sans attendre le serveur. */
+  function indiceCompte() {
     try {
-      let bets;
-      if (engine === 'ocr') {
-        const res = await Ocr.analyze(imgs, msg => sub.textContent = msg, { forcedBook: presetBook });
-        preview.innerHTML = res.previews.map(u => `<img src="${u}" alt="ticket">`).join('');
-        bets = res.bets;
-      } else {
-        const compressed = await Promise.all(imgs.map(Vision.compress));
-        preview.innerHTML = compressed.map(c => `<img src="${c.dataUrl}" alt="ticket">`).join('');
-        bets = await Vision.analyze(compressed, { forcedBook: presetBook });
-      }
-      if (presetBook) bets.forEach(b => { b.bookmaker = presetBook; }); /* override de sécurité */
-      busy.classList.add('hide');
-      preview.classList.remove('hide');
-      renderDetected(bets);
-      const partial = bets.filter(b => b._empty).length;
-      if (partial === bets.length) UI.toast('Lecture difficile — complète le formulaire (ou essaie Claude Vision dans Réglages)', 'err');
-      else UI.toast(`${bets.length} pari${bets.length > 1 ? 's' : ''} détecté${bets.length > 1 ? 's' : ''} — vérifie et valide`, 'ok');
-    } catch (e) {
-      busy.classList.add('hide');
-      idle.classList.remove('hide');
-      if (e.message === 'NO_API_KEY') { UI.toast('Clé API manquante — configure-la dans Réglages', 'err'); go('settings'); }
-      else UI.toast(`Analyse échouée : ${e.message}`, 'err');
-    }
+      var last = JSON.parse(localStorage.getItem('bk_last_cloud_v2') || 'null');
+      var sess = JSON.parse(localStorage.getItem(BK.CONF.SESSION_KEY) || 'null');
+      var u = sess && (sess.user || (sess.currentSession && sess.currentSession.user));
+      var uid = u && u.id;
+      return last && uid && last.uid === uid ? { uid: uid } : null;
+    } catch (_) { return null; }
   }
 
-  function renderDetected(bets) {
-    const zone = document.getElementById('detected-zone');
-    zone.innerHTML = `<div class="page-sub" style="margin-bottom:12px">✨ <b style="color:var(--green)">${bets.length} pari${bets.length > 1 ? 's' : ''} détecté${bets.length > 1 ? 's' : ''}.</b> Vérifie les champs, complète si besoin, puis valide chaque pari.</div>`;
-    bets.forEach((d, i) => {
-      const card = document.createElement('div');
-      card.className = 'detected-card';
-      const badge = d._empty
-        ? '<span class="badge badge-amber">⚠ LECTURE PARTIELLE</span>'
-        : `<span class="badge badge-green">DÉTECTÉ #${i + 1}</span>`;
-      card.innerHTML = `<div class="detected-head">
-        ${badge}
-        <span class="dh-title">${BetForm.esc(d.bookmaker || 'Bookmaker ?')} — ${BetForm.esc((d.selections?.[0]?.pick) || d.sport || 'Pari')}</span>
-      </div><div class="mount"></div>`;
-      zone.appendChild(card);
-      BetForm.render(card.querySelector('.mount'), Store.normalizeBet(BetForm.fromDetection(d)), data => {
-        Store.addBet(data);
-        card.innerHTML = `<div style="display:flex;align-items:center;gap:10px"><span class="badge badge-green">✓ ENREGISTRÉ</span><b>${BetForm.esc(data.selections?.[0]?.pick || 'Pari')}</b> · ${UI.money(+data.stake)} @${(+data.totalOdds || 0).toFixed(2)}</div>`;
-        UI.toast('Pari enregistré ✓', 'ok');
-      }, { saveLabel: '✓ Valider ce pari' });
-    });
-    zone.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-
-  function bindDropzone() {
-    const dz = document.getElementById('dropzone');
-    const input = document.getElementById('file-input');
-    dz.addEventListener('click', e => { if (!e.target.closest('img')) input.click(); });
-    input.addEventListener('change', () => { handleFiles(input.files); input.value = ''; });
-    dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
-    dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
-    dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag'); handleFiles(e.dataTransfer.files); });
-    document.addEventListener('paste', e => {
-      if (currentView !== 'add') return;
-      const files = [...(e.clipboardData?.files || [])];
-      if (files.length) handleFiles(files);
-    });
-  }
-
-  /* ── Mode manuel ────────────────────────────── */
-  function mountManualForm() {
-    BetForm.render(document.getElementById('bet-form-mount'), null, data => {
-      Store.addBet(data);
-      UI.toast('Pari enregistré ✓', 'ok');
-      mountManualForm();
-      go('dashboard');
-    });
-  }
-
-  /* ── Réglages ───────────────────────────────── */
-  function loadSettingsForm() {
-    const s = Store.state.settings;
-    document.getElementById('set-initial').value = s.initialBankroll;
-    document.getElementById('set-unit').value = s.unitValue;
-    document.getElementById('set-currency').value = s.currency;
-    document.getElementById('set-engine').value = s.engine || 'ocr';
-    document.getElementById('set-apikey').value = s.apiKey;
-    document.getElementById('set-model').value = s.model;
-    document.getElementById('set-ghpat').value = s.ghPat;
-    document.getElementById('set-autosync').value = s.autoSync ? '1' : '0';
-    document.getElementById('gist-status').textContent = s.gistId ? `gist lié : ${s.gistId.slice(0, 8)}…` : '';
-  }
-
-  function bindSettings() {
-    document.getElementById('save-bankroll').addEventListener('click', () => {
-      const s = Store.state.settings;
-      s.initialBankroll = +document.getElementById('set-initial').value || 0;
-      s.unitValue = +document.getElementById('set-unit').value || 0;
-      s.currency = document.getElementById('set-currency').value;
-      Store.save();
-      UI.toast('Bankroll enregistrée ✓', 'ok');
-    });
-
-    document.getElementById('set-engine').addEventListener('change', () => {
-      Store.state.settings.engine = document.getElementById('set-engine').value;
-      Store.save();
-      UI.toast(Store.state.settings.engine === 'ocr' ? 'Moteur : OCR local ✓ (gratuit, sans clé)' : 'Moteur : Claude Vision ✓', 'ok');
-    });
-
-    document.getElementById('save-api').addEventListener('click', () => {
-      const s = Store.state.settings;
-      s.engine = document.getElementById('set-engine').value;
-      s.apiKey = document.getElementById('set-apikey').value.trim();
-      s.model = document.getElementById('set-model').value;
-      Store.save();
-      UI.toast('Configuration détection enregistrée ✓', 'ok');
-    });
-
-    document.getElementById('test-api').addEventListener('click', async () => {
-      const el = document.getElementById('api-test-result');
-      Store.state.settings.apiKey = document.getElementById('set-apikey').value.trim();
-      Store.state.settings.model = document.getElementById('set-model').value;
-      Store.save();
-      el.innerHTML = '<span class="spin"></span>';
-      try { await Vision.testKey(); el.innerHTML = '<span class="pos">✓ Connexion OK</span>'; }
-      catch (e) { el.innerHTML = `<span class="neg">✗ ${BetForm.esc(e.message)}</span>`; }
-    });
-
-    document.getElementById('gist-push').addEventListener('click', () => {
-      Store.state.settings.ghPat = document.getElementById('set-ghpat').value.trim();
-      Store.state.settings.autoSync = document.getElementById('set-autosync').value === '1';
-      Store.save();
-      Store.gistPush(false);
-    });
-    document.getElementById('gist-pull').addEventListener('click', () => {
-      Store.state.settings.ghPat = document.getElementById('set-ghpat').value.trim();
-      Store.save();
-      Store.gistPull();
-    });
-
-    document.getElementById('export-json').addEventListener('click', Store.exportJSON);
-    document.getElementById('export-csv').addEventListener('click', Store.exportCSV);
-    document.getElementById('import-json').addEventListener('click', () => document.getElementById('import-file').click());
-    document.getElementById('import-file').addEventListener('change', e => {
-      const f = e.target.files[0];
-      if (!f) return;
-      if (!confirm('Importer ce fichier remplacera tes données actuelles. Continuer ?')) { e.target.value = ''; return; }
-      const r = new FileReader();
-      r.onload = () => {
-        try { Store.importJSON(r.result); UI.toast('Import réussi ✓', 'ok'); refresh(); loadSettingsForm(); }
-        catch (err) { UI.toast('Import échoué : ' + err.message, 'err'); }
-      };
-      r.readAsText(f);
-      e.target.value = '';
-    });
-
-    document.getElementById('reset-all').addEventListener('click', () => {
-      if (!confirm('⚠️ Tout supprimer ? Cette action est irréversible.')) return;
-      if (!confirm('Dernière confirmation : effacer TOUS les paris et réglages ?')) return;
-      Store.resetAll();
-      UI.toast('Données réinitialisées');
-      loadSettingsForm();
-      go('dashboard');
-    });
-  }
-
-  /* ── Init ───────────────────────────────────── */
   function init() {
-    document.querySelectorAll('.nav-tab').forEach(t => t.addEventListener('click', () => go(t.dataset.view)));
-
-    const presetSel = document.getElementById('preset-book');
-    BetForm.BOOKS.filter(b => b !== 'Autre').forEach(b => {
-      const o = document.createElement('option'); o.value = b; o.textContent = b; presetSel.appendChild(o);
+    document.addEventListener('click', onClick);
+    document.addEventListener('submit', onSubmit);
+    document.addEventListener('input', function (e) { if (e.target.tagName !== 'SELECT') onInput(e); });
+    document.addEventListener('change', onChange);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !$('bk-modal').hidden) UI.closeModal(); });
+    $('bk-modal').addEventListener('click', function (e) { if (e.target.id === 'bk-modal') UI.closeModal(); });
+    window.addEventListener('hashchange', function () { go(location.hash.slice(1), false); });
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'visible') return;
+      if (S.mode === 'cloud') S.flush();
+      // Retour sur l'onglet après un abonnement pris sur matchup-tennis.fr.
+      if (BK.Auth.user) BK.Auth.refresh(false);
+      autoSettle(false);
     });
-    presetSel.addEventListener('change', updateEngineHint);
+    setInterval(function () { if (document.visibilityState === 'visible') autoSettle(false); }, 10 * 60e3);
 
-    document.getElementById('mode-screen').addEventListener('click', () => {
-      document.getElementById('mode-screen').classList.add('active');
-      document.getElementById('mode-manual').classList.remove('active');
-      document.getElementById('add-screen-zone').classList.remove('hide');
-      document.getElementById('add-manual-zone').classList.add('hide');
-    });
-    document.getElementById('mode-manual').addEventListener('click', () => {
-      document.getElementById('mode-manual').classList.add('active');
-      document.getElementById('mode-screen').classList.remove('active');
-      document.getElementById('add-manual-zone').classList.remove('hide');
-      document.getElementById('add-screen-zone').classList.add('hide');
+    S.on(function (reason) {
+      if (reason === 'sync') { UI.syncBar(); return; }
+      renderAll();
     });
 
-    document.getElementById('modal-close').addEventListener('click', () => document.getElementById('modal-bg').classList.remove('open'));
-    document.getElementById('modal-bg').addEventListener('click', e => { if (e.target.id === 'modal-bg') e.target.classList.remove('open'); });
-
-    ['f-search', 'f-status', 'f-book', 'f-sport', 'f-tipster', 'f-period'].forEach(id =>
-      document.getElementById(id).addEventListener('input', UI.renderHistory));
-    document.getElementById('f-reset').addEventListener('click', () => {
-      ['f-search', 'f-status', 'f-book', 'f-sport', 'f-tipster', 'f-period'].forEach(id => document.getElementById(id).value = '');
-      UI.renderHistory();
-    });
-    UI.bindHistorySort();
-
-    document.querySelectorAll('.split-tab').forEach(t => t.addEventListener('click', () => UI.renderSplit(t.dataset.split)));
-
-    bindDropzone();
-    bindSettings();
-    mountManualForm();
-
-    const hash = location.hash.replace('#', '');
-    go(['dashboard', 'add', 'history', 'stats', 'settings'].includes(hash) ? hash : 'dashboard');
+    var repris = S.boot(indiceCompte());
+    go(location.hash.slice(1) || 'dash', false);
+    renderAll();
+    if (repris) UI.toast(repris + ' pari' + (repris > 1 ? 's' : '') + ' de l\'ancienne version repris ✓', 'ok');
+    // Le programme se charge tôt : la vue Ajouter s'ouvre sans attente.
+    BK.MU.load().catch(function () { /* affiché dans la vue */ });
+    BK.Auth.on(onAuth);
+    BK.Auth.init();
+    autoSettle(true);
   }
 
-  document.addEventListener('DOMContentLoaded', init);
-
-  return { go, refresh, quickSettle, deleteBet, editBet };
-})();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+  BK.App = { go: go, autoSettle: autoSettle, app: app, exportCSV: exportCSV };
+})(window.BK = window.BK || {});

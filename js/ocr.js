@@ -1,36 +1,105 @@
-/* ══════════════════════════════════════════════
-   OCR — détection de tickets 100 % locale
-   Tesseract.js (navigateur) + parseur FR.
-   Aucune clé API, aucun envoi de données.
-   ══════════════════════════════════════════════ */
-const Ocr = (() => {
+/* ══════════════════════════════════════════════════════════════════════════
+   Bankroll Manager — lecture d'une capture de ticket (BK.Ocr)
 
-  const TESS_CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+   OCR 100 % dans le navigateur (Tesseract.js 5.1.1) : la capture ne quitte
+   jamais le téléphone, aucune clé, aucun coût.
+
+   ⚠️ La page n'autorise que ses propres scripts (CSP de index.html) :
+   Tesseract est EMBARQUÉ dans vendor/tesseract-5.1.1/ (bibliothèque, worker,
+   cœur wasm, modèle français), en chemins RELATIFS à la page (le site vit
+   sous /bankroll-manager/ sur GitHub Pages). La CSP autorise
+   'wasm-unsafe-eval' (compilation WebAssembly, rien d'autre). Le worker est
+   chargé depuis son URL et non en « blob: » (workerBlobURL:false). Le modèle
+   est servi décompressé (fra.traineddata, gzip:false).
+
+   Le parseur (parseText) est repris tel quel du Bankroll Manager validé en
+   juillet (formats Winamax combiné/compact, Betclic, Unibet freebet, boost,
+   dates relatives, scores rejetés…). Le lien avec le programme MatchUp se
+   fait APRÈS, dans js/add.js (BK.MU.matchText).
+   ══════════════════════════════════════════════════════════════════════════ */
+(function (BK) {
+  'use strict';
+
+  // Résolu au premier usage (pas au chargement : le banc Node lit ce fichier
+  // sans document).
+  const base = () => new URL('vendor/tesseract-5.1.1/', document.baseURI).href;
   let libPromise = null, worker = null, statusCb = null, statusPrefix = '';
 
-  /* ── Chargement paresseux de la lib ─────────── */
   function loadLib() {
     if (window.Tesseract) return Promise.resolve();
     if (libPromise) return libPromise;
     libPromise = new Promise((res, rej) => {
       const s = document.createElement('script');
-      s.src = TESS_CDN;
+      s.src = base() + 'tesseract.min.js';
       s.onload = res;
-      s.onerror = () => { libPromise = null; rej(new Error('Moteur OCR inaccessible (CDN) — vérifie ta connexion')); };
+      s.onerror = () => { libPromise = null; rej(new Error('Moteur de lecture introuvable — recharge la page')); };
       document.head.appendChild(s);
     });
     return libPromise;
   }
 
-  async function getWorker() {
-    await loadLib();
-    if (worker) return worker;
-    statusCb?.('Téléchargement du modèle OCR (première fois, ~4 Mo)…');
-    worker = await Tesseract.createWorker('fra', 1, {
-      logger: m => {
-        if (m.status === 'recognizing text') statusCb?.(`${statusPrefix}Lecture du ticket… ${Math.round(m.progress * 100)} %`);
-      }
+  /** Échec FRANC du worker. Sans 'wasm-unsafe-eval' dans la CSP, le cœur
+   *  WebAssembly est refusé DANS le worker (« Aborted(CompileError…) ») et
+   *  createWorker ne rend jamais la main : l'écran restait sur « Préparation »
+   *  indéfiniment (vu au banc du 24/10). On écoute cette erreur et on borne
+   *  l'attente : un échec bruyant vaut mieux qu'un chargement sans fin. */
+  function garde(ms, quoi) {
+    let off = () => {};
+    const p = new Promise((_, rej) => {
+      const t = setTimeout(() => rej(new Error('timeout ' + quoi)), ms);
+      const onErr = ev => {
+        const m = String((ev && (ev.message || (ev.reason && ev.reason.message) || ev.reason)) || '');
+        if (/webassembly|wasm|aborted\(|content security|unsafe-eval/i.test(m)) rej(new Error(m));
+      };
+      window.addEventListener('error', onErr);
+      window.addEventListener('unhandledrejection', onErr);
+      off = () => { clearTimeout(t); window.removeEventListener('error', onErr); window.removeEventListener('unhandledrejection', onErr); };
     });
+    return { p, off: () => off() };
+  }
+
+  function messageEchec(e) {
+    const msg = String(e && e.message || e);
+    if (/wasm|webassembly|unsafe-eval|content security|aborted\(/i.test(msg)) {
+      return new Error('La lecture de capture n\'est pas disponible sur ce navigateur. Ajoute ton pari depuis le programme ou à la main.');
+    }
+    if (/^timeout/.test(msg)) return new Error('La lecture de capture ne répond pas (connexion lente ?). Réessaie, ou ajoute ton pari depuis le programme.');
+    return new Error('La lecture de capture a échoué (' + msg.slice(0, 80) + ')');
+  }
+
+  /** WebAssembly autorisé ici ? Un module VIDE (8 octets) suffit à le savoir,
+   *  sans attendre le worker : sous une CSP sans 'wasm-unsafe-eval', la
+   *  compilation est refusée aussi dans la page. */
+  async function wasmAutorise() {
+    if (typeof WebAssembly !== 'object' || !WebAssembly.compile) return false;
+    try { await WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])); return true; }
+    catch (_) { return false; }
+  }
+
+  async function getWorker() {
+    if (worker) return worker;
+    if (!(await wasmAutorise())) throw messageEchec(new Error('wasm refusé (CSP ou navigateur)'));
+    await loadLib();
+    statusCb && statusCb('Préparation de la lecture (première fois : ~2 Mo, ensuite en cache)…');
+    const g = garde(60000, 'worker');
+    try {
+      worker = await Promise.race([Tesseract.createWorker('fra', 1, {
+        workerPath: base() + 'worker.min.js',
+        corePath: base(),
+        langPath: base() + 'lang',
+        gzip: false,
+        workerBlobURL: false,
+        logger: m => {
+          if (m.status === 'recognizing text' && statusCb) statusCb(`${statusPrefix}Lecture du ticket… ${Math.round(m.progress * 100)} %`);
+        },
+        errorHandler: e => console.warn('[bk/ocr]', e)
+      }), g.p]);
+    } catch (e) {
+      worker = null;
+      throw messageEchec(e);
+    } finally {
+      g.off();
+    }
     return worker;
   }
 
@@ -73,7 +142,11 @@ const Ocr = (() => {
     lum /= px.length / 4;
     const dom = Object.entries(hue).sort((a, b) => b[1] - a[1])[0];
     const colorCandidates = dom[1] > 30
-      ? ({ red: ['Winamax', 'Betclic'], orange: ['ZEbet'], yellow: ['Bwin', 'Winamax'], green: ['Unibet', 'PMU'], blue: ['ParionsSport'] })[dom[0]]
+      // ⚠️ Toujours AU MOINS deux candidats : la couleur seule ne nomme jamais
+      // un bookmaker (24/10 : le badge de cote BLEU d'un ticket Winamax donnait
+      // « ParionsSport »). Un champ vide oblige à choisir ; un nom faux passe
+      // inaperçu. Le menu « Bookmaker du ticket » est fait pour ça.
+      ? ({ red: ['Winamax', 'Betclic'], orange: ['ZEbet', 'Betclic'], yellow: ['Bwin', 'Winamax'], green: ['Unibet', 'PMU'], blue: ['ParionsSport', 'Winamax'] })[dom[0]]
       : null;
 
     /* canvas OCR : upscale si petit, cap si géant, inversion si ticket sombre */
@@ -369,23 +442,30 @@ const Ocr = (() => {
     };
   }
 
-  /* ── API principale ─────────────────────────── */
+  /* ── API principale ───────────────────────────────────────────────────── */
   async function analyze(files, onStatus, opts = {}) {
     statusCb = onStatus || null;
-    const preps = [];
-    for (const f of files) preps.push(prep(await loadImage(f)));
-    const previews = preps.map(p => p.preview);
-    const w = await getWorker();
-    const bets = [];
-    for (let i = 0; i < preps.length; i++) {
-      statusPrefix = files.length > 1 ? `Ticket ${i + 1}/${files.length} — ` : '';
-      onStatus?.(`${statusPrefix}Lecture du ticket… 0 %`);
-      const { data } = await w.recognize(preps[i].canvas);
-      bets.push(parseText(data.text || '', { colorCandidates: preps[i].colorCandidates, forcedBook: opts.forcedBook }));
+    try {
+      const preps = [];
+      for (const f of files) preps.push(prep(await loadImage(f)));
+      const previews = preps.map(p => p.preview);
+      const w = await getWorker();
+      const bets = [];
+      for (let i = 0; i < preps.length; i++) {
+        statusPrefix = files.length > 1 ? `Ticket ${i + 1}/${files.length} — ` : '';
+        onStatus && onStatus(`${statusPrefix}Lecture du ticket… 0 %`);
+        const g = garde(90000, 'lecture');
+        let data;
+        try { ({ data } = await Promise.race([w.recognize(preps[i].canvas), g.p])); }
+        catch (e) { throw messageEchec(e); }
+        finally { g.off(); }
+        bets.push(parseText(data.text || '', { colorCandidates: preps[i].colorCandidates, forcedBook: opts.forcedBook, today: opts.today }));
+      }
+      return { bets, previews };
+    } finally {
+      statusCb = null; statusPrefix = '';
     }
-    statusCb = null; statusPrefix = '';
-    return { bets, previews };
   }
 
-  return { analyze, parseText };
-})();
+  BK.Ocr = { analyze, parseText };
+})(window.BK = window.BK || {});
